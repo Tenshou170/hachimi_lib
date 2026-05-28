@@ -29,10 +29,14 @@ impl<'a> Iterator for IsolateTags<'a> {
         self.current_byte?;
 
         let start = self.i;
+        // Unity tags
         let mut tag_start = 0;
         let mut in_tag = false;
         let mut in_closing_tag = false;
         let mut expecting_tag_name = false;
+        // Template expressions
+        let mut expecting_expr_open = false;
+        let mut in_expression = false;
 
         while let Some(c) = self.current_byte {
             if in_tag {
@@ -84,6 +88,24 @@ impl<'a> Iterator for IsolateTags<'a> {
                         }
                     }
                 }
+            } else if in_expression {
+                if c == b')' {
+                    if !self.s[self.i..].contains(")") {
+                        in_expression = false;
+                    } else {
+                        self.i += 1;
+                        self.current_byte = self.bytes.next();
+                        while let Some(ws) = self.current_byte {
+                            if char::from(ws).is_whitespace() {
+                                self.i += 1;
+                                self.current_byte = self.bytes.next();
+                                continue;
+                            }
+                            break;
+                        }
+                        return Some((&self.s[start..self.i], true));
+                    }
+                }
             } else if c == b'<' {
                 if start == self.i {
                     in_tag = true;
@@ -92,6 +114,21 @@ impl<'a> Iterator for IsolateTags<'a> {
                 } else {
                     break;
                 }
+            } else if c == b'$' {
+                expecting_expr_open = true;
+            } else if c == b'(' {
+                if expecting_expr_open {
+                    if self.i != start + 1 {
+                        self.i -= 1;
+                        self.bytes = self.s.bytes();
+                        self.current_byte = self.bytes.nth(self.i);
+                        break;
+                    }
+                    in_expression = true;
+                    expecting_expr_open = false;
+                }
+            } else if expecting_expr_open {
+                expecting_expr_open = false;
             }
 
             self.i += 1;
@@ -160,12 +197,14 @@ fn custom_wrap_algorithm<'a, 'b>(
     words: &'b [Word<'a>],
     line_widths: &'b [usize],
 ) -> Vec<&'b [Word<'a>]> {
-    // Create intermediate buffer that doesn't contain formatting tags
+    // Create intermediate buffer that doesn't contain formatting tags or expressions
     let mut clean_fragments = Vec::with_capacity(words.len());
     let mut removed_indices = Vec::with_capacity(words.len());
     let mut remove_offset = 0;
     for (i, word) in words.iter().enumerate() {
-        if word.starts_with("<") && word.ends_with(">") {
+        let is_tag = word.starts_with("<") && word.ends_with(">");
+        let is_expr = word.starts_with("$(") && word.ends_with(")");
+        if is_tag || is_expr {
             removed_indices.push(i - remove_offset);
             remove_offset += 1;
             continue;
